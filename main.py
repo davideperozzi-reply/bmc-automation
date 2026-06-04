@@ -43,10 +43,11 @@ class LoginFormParser(HTMLParser):
 
 
 class FormParser(HTMLParser):
-    def __init__(self, form_id: str) -> None:
+    def __init__(self, form_id: str | None) -> None:
         super().__init__()
         self.form_id = form_id
         self.in_form = False
+        self.found = False
         self.action = ""
         self.method = "get"
         self.fields: dict[str, str] = {}
@@ -54,8 +55,12 @@ class FormParser(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attrs_dict = {key: value or "" for key, value in attrs}
 
-        if tag == "form" and attrs_dict.get("id") == self.form_id:
+        if tag == "form" and not self.found:
+            if self.form_id is not None and attrs_dict.get("id") != self.form_id:
+                return
+
             self.in_form = True
+            self.found = True
             self.action = attrs_dict.get("action", "")
             self.method = attrs_dict.get("method", "get").lower()
             return
@@ -237,17 +242,11 @@ def _browser_start_url(config: Config) -> str:
     return f"{config.base_url}/arsys/"
 
 
-def _submit_hash_handler_if_present(
-    html: str,
+def _submit_form(
+    parser: FormParser,
     page_url: str,
     opener: urllib.request.OpenerDirector,
 ) -> tuple[str, str]:
-    parser = FormParser("hashHandlerForm")
-    parser.feed(html)
-
-    if not parser.fields:
-        return html, page_url
-
     action = urllib.parse.urljoin(page_url, parser.action or page_url)
     payload = urllib.parse.urlencode(parser.fields).encode("utf-8")
     method = parser.method.upper()
@@ -266,10 +265,13 @@ def _submit_hash_handler_if_present(
         )
         return response_body.decode("utf-8", errors="replace"), response_url
 
-    separator = "&" if urllib.parse.urlparse(action).query else "?"
+    if payload:
+        separator = "&" if urllib.parse.urlparse(action).query else "?"
+        action = f"{action}{separator}{payload.decode('utf-8')}"
+
     response_body, response_url = _request_with_url(
         "GET",
-        f"{action}{separator}{payload.decode('utf-8')}",
+        action,
         opener=opener,
         headers={
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -277,6 +279,50 @@ def _submit_hash_handler_if_present(
         },
     )
     return response_body.decode("utf-8", errors="replace"), response_url
+
+
+def _submit_auto_form_if_present(
+    html: str,
+    page_url: str,
+    opener: urllib.request.OpenerDirector,
+    *,
+    form_id: str | None = None,
+) -> tuple[str, str]:
+    parser = FormParser(form_id)
+    parser.feed(html)
+
+    if not parser.found:
+        return html, page_url
+
+    return _submit_form(parser, page_url, opener)
+
+
+def _follow_auto_submit_pages(
+    html: str,
+    page_url: str,
+    opener: urllib.request.OpenerDirector,
+) -> tuple[str, str]:
+    for _ in range(5):
+        previous_html = html
+        previous_url = page_url
+
+        html, page_url = _submit_auto_form_if_present(
+            html,
+            page_url,
+            opener,
+            form_id="hashHandlerForm",
+        )
+        if (html, page_url) != (previous_html, previous_url):
+            continue
+
+        if "document.forms[0].submit()" not in html:
+            break
+
+        html, page_url = _submit_auto_form_if_present(html, page_url, opener)
+        if (html, page_url) == (previous_html, previous_url):
+            break
+
+    return html, page_url
 
 
 def _request_with_url(
@@ -385,7 +431,7 @@ def rsso_login(config: Config, username: str, password: str) -> urllib.request.O
         },
     )
     login_page = login_page_body.decode("utf-8", errors="replace")
-    login_page, login_page_url = _submit_hash_handler_if_present(
+    login_page, login_page_url = _follow_auto_submit_pages(
         login_page,
         login_page_url,
         opener,
