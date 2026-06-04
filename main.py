@@ -42,6 +42,34 @@ class LoginFormParser(HTMLParser):
             self.in_login_form = False
 
 
+class FormParser(HTMLParser):
+    def __init__(self, form_id: str) -> None:
+        super().__init__()
+        self.form_id = form_id
+        self.in_form = False
+        self.action = ""
+        self.method = "get"
+        self.fields: dict[str, str] = {}
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attrs_dict = {key: value or "" for key, value in attrs}
+
+        if tag == "form" and attrs_dict.get("id") == self.form_id:
+            self.in_form = True
+            self.action = attrs_dict.get("action", "")
+            self.method = attrs_dict.get("method", "get").lower()
+            return
+
+        if tag == "input" and self.in_form:
+            name = attrs_dict.get("name")
+            if name:
+                self.fields[name] = attrs_dict.get("value", "")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "form" and self.in_form:
+            self.in_form = False
+
+
 class LoginErrorParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
@@ -209,6 +237,46 @@ def _browser_start_url(config: Config) -> str:
     return f"{config.base_url}/arsys/"
 
 
+def _submit_hash_handler_if_present(
+    html: str,
+    page_url: str,
+    opener: urllib.request.OpenerDirector,
+) -> str:
+    parser = FormParser("hashHandlerForm")
+    parser.feed(html)
+
+    if not parser.fields:
+        return html
+
+    action = urllib.parse.urljoin(page_url, parser.action or page_url)
+    payload = urllib.parse.urlencode(parser.fields).encode("utf-8")
+    method = parser.method.upper()
+
+    if method == "POST":
+        return _request(
+            "POST",
+            action,
+            opener=opener,
+            data=payload,
+            content_type="application/x-www-form-urlencoded",
+            headers={
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "User-Agent": "Mozilla/5.0",
+            },
+        ).decode("utf-8", errors="replace")
+
+    separator = "&" if urllib.parse.urlparse(action).query else "?"
+    return _request(
+        "GET",
+        f"{action}{separator}{payload.decode('utf-8')}",
+        opener=opener,
+        headers={
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "User-Agent": "Mozilla/5.0",
+        },
+    ).decode("utf-8", errors="replace")
+
+
 def _request(
     method: str,
     url: str,
@@ -292,6 +360,7 @@ def rsso_login(config: Config, username: str, password: str) -> urllib.request.O
             "User-Agent": "Mozilla/5.0",
         },
     ).decode("utf-8", errors="replace")
+    login_page = _submit_hash_handler_if_present(login_page, start_url, opener)
 
     parser = LoginFormParser()
     parser.feed(login_page)
