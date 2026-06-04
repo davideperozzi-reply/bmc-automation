@@ -82,8 +82,11 @@ class HtmlSummaryParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
         self.in_title = False
+        self.ignored_tag_depth = 0
         self.title_parts: list[str] = []
+        self.text_parts: list[str] = []
         self.forms: list[dict[str, str]] = []
+        self.inputs: list[dict[str, str]] = []
         self.selects: list[dict[str, Any]] = []
         self.current_select: dict[str, Any] | None = None
         self.current_option: dict[str, str] | None = None
@@ -91,7 +94,9 @@ class HtmlSummaryParser(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attrs_dict = {key: value or "" for key, value in attrs}
 
-        if tag == "title":
+        if tag in {"script", "style"}:
+            self.ignored_tag_depth += 1
+        elif tag == "title":
             self.in_title = True
         elif tag == "form":
             self.forms.append(
@@ -100,6 +105,14 @@ class HtmlSummaryParser(HTMLParser):
                     "name": attrs_dict.get("name", ""),
                     "action": attrs_dict.get("action", ""),
                     "method": attrs_dict.get("method", ""),
+                }
+            )
+        elif tag == "input":
+            self.inputs.append(
+                {
+                    "id": attrs_dict.get("id", ""),
+                    "name": attrs_dict.get("name", ""),
+                    "type": attrs_dict.get("type", ""),
                 }
             )
         elif tag == "select":
@@ -116,7 +129,9 @@ class HtmlSummaryParser(HTMLParser):
             }
 
     def handle_endtag(self, tag: str) -> None:
-        if tag == "title":
+        if tag in {"script", "style"} and self.ignored_tag_depth:
+            self.ignored_tag_depth -= 1
+        elif tag == "title":
             self.in_title = False
         elif tag == "select":
             self.current_select = None
@@ -135,6 +150,10 @@ class HtmlSummaryParser(HTMLParser):
             self.title_parts.append(data.strip())
         elif self.current_option is not None:
             self.current_option["text"] += data
+        elif not self.ignored_tag_depth:
+            text = data.strip()
+            if text:
+                self.text_parts.append(text)
 
 
 def _summarize_html_page(html: str) -> str:
@@ -159,6 +178,18 @@ def _summarize_html_page(html: str) -> str:
             )
         parts.append("forms=" + "; ".join(form_parts))
 
+    if parser.inputs:
+        input_parts = []
+        for input_field in parser.inputs[:20]:
+            input_parts.append(
+                "input("
+                f"id={input_field['id']!r}, "
+                f"name={input_field['name']!r}, "
+                f"type={input_field['type']!r}"
+                ")"
+            )
+        parts.append("inputs=" + "; ".join(input_parts))
+
     if parser.selects:
         select_parts = []
         for select in parser.selects[:5]:
@@ -175,6 +206,10 @@ def _summarize_html_page(html: str) -> str:
                 ")"
             )
         parts.append("selects=" + "; ".join(select_parts))
+
+    text_preview = " ".join(" ".join(parser.text_parts).split())[:500]
+    if text_preview:
+        parts.append(f"text={text_preview!r}")
 
     return " | ".join(parts) or "no html title/forms/selects found"
 
