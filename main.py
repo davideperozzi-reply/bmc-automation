@@ -42,6 +42,42 @@ class LoginFormParser(HTMLParser):
             self.in_login_form = False
 
 
+class LoginErrorParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.in_error_message = 0
+        self.parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attrs_dict = {key: value or "" for key, value in attrs}
+        classes = attrs_dict.get("class", "").split()
+
+        if (
+            attrs_dict.get("id") == "login-error-message"
+            or "login-error-message" in classes
+        ):
+            self.in_error_message += 1
+        elif self.in_error_message:
+            self.in_error_message += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if self.in_error_message:
+            self.in_error_message -= 1
+
+    def handle_data(self, data: str) -> None:
+        if self.in_error_message:
+            text = data.strip()
+            if text:
+                self.parts.append(text)
+
+
+def _extract_login_error(html: str) -> str | None:
+    parser = LoginErrorParser()
+    parser.feed(html)
+    message = " ".join(parser.parts)
+    return message or None
+
+
 def _request(
     method: str,
     url: str,
@@ -161,7 +197,10 @@ def rsso_login(config: Config, username: str, password: str) -> urllib.request.O
     ).decode("utf-8", errors="replace")
 
     if "login_form" in response_body or "login-error-message" in response_body:
-        raise BmcApiError("RSSO login did not complete; check username/password")
+        login_error = _extract_login_error(response_body)
+        if login_error:
+            raise BmcApiError(f"RSSO login failed: {login_error}")
+        raise BmcApiError("RSSO login failed: no explicit error message returned")
 
     return opener
 
