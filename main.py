@@ -82,11 +82,8 @@ class HtmlSummaryParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
         self.in_title = False
-        self.ignored_tag_depth = 0
         self.title_parts: list[str] = []
-        self.text_parts: list[str] = []
         self.forms: list[dict[str, str]] = []
-        self.inputs: list[dict[str, str]] = []
         self.selects: list[dict[str, Any]] = []
         self.current_select: dict[str, Any] | None = None
         self.current_option: dict[str, str] | None = None
@@ -94,9 +91,7 @@ class HtmlSummaryParser(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attrs_dict = {key: value or "" for key, value in attrs}
 
-        if tag in {"script", "style"}:
-            self.ignored_tag_depth += 1
-        elif tag == "title":
+        if tag == "title":
             self.in_title = True
         elif tag == "form":
             self.forms.append(
@@ -105,14 +100,6 @@ class HtmlSummaryParser(HTMLParser):
                     "name": attrs_dict.get("name", ""),
                     "action": attrs_dict.get("action", ""),
                     "method": attrs_dict.get("method", ""),
-                }
-            )
-        elif tag == "input":
-            self.inputs.append(
-                {
-                    "id": attrs_dict.get("id", ""),
-                    "name": attrs_dict.get("name", ""),
-                    "type": attrs_dict.get("type", ""),
                 }
             )
         elif tag == "select":
@@ -129,9 +116,7 @@ class HtmlSummaryParser(HTMLParser):
             }
 
     def handle_endtag(self, tag: str) -> None:
-        if tag in {"script", "style"} and self.ignored_tag_depth:
-            self.ignored_tag_depth -= 1
-        elif tag == "title":
+        if tag == "title":
             self.in_title = False
         elif tag == "select":
             self.current_select = None
@@ -150,10 +135,6 @@ class HtmlSummaryParser(HTMLParser):
             self.title_parts.append(data.strip())
         elif self.current_option is not None:
             self.current_option["text"] += data
-        elif not self.ignored_tag_depth:
-            text = data.strip()
-            if text:
-                self.text_parts.append(text)
 
 
 def _summarize_html_page(html: str) -> str:
@@ -178,18 +159,6 @@ def _summarize_html_page(html: str) -> str:
             )
         parts.append("forms=" + "; ".join(form_parts))
 
-    if parser.inputs:
-        input_parts = []
-        for input_field in parser.inputs[:20]:
-            input_parts.append(
-                "input("
-                f"id={input_field['id']!r}, "
-                f"name={input_field['name']!r}, "
-                f"type={input_field['type']!r}"
-                ")"
-            )
-        parts.append("inputs=" + "; ".join(input_parts))
-
     if parser.selects:
         select_parts = []
         for select in parser.selects[:5]:
@@ -206,10 +175,6 @@ def _summarize_html_page(html: str) -> str:
                 ")"
             )
         parts.append("selects=" + "; ".join(select_parts))
-
-    text_preview = " ".join(" ".join(parser.text_parts).split())[:500]
-    if text_preview:
-        parts.append(f"text={text_preview!r}")
 
     return " | ".join(parts) or "no html title/forms/selects found"
 
@@ -228,6 +193,20 @@ def _set_first_matching_field(
             payload[candidate] = value
             return True
     return False
+
+
+def _browser_start_url(config: Config) -> str:
+    if config.browser_start_url:
+        return config.browser_start_url
+
+    query = {}
+    if config.auth_string:
+        query["user_domain"] = config.auth_string
+
+    encoded_query = urllib.parse.urlencode(query)
+    if encoded_query:
+        return f"{config.base_url}/arsys/?{encoded_query}"
+    return f"{config.base_url}/arsys/"
 
 
 def _request(
@@ -302,22 +281,12 @@ def rsso_login(config: Config, username: str, password: str) -> urllib.request.O
 
     cookie_jar = http.cookiejar.CookieJar()
     opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
-    start_url = f"{config.rsso_url}/rsso/start"
-    goto_url = f"{config.base_url}/arsys/"
-
-    hash_handler_payload = {
-        "url_hash_handler": "true",
-        "goto": goto_url,
-    }
-    if config.rsso_tenant:
-        hash_handler_payload["tenant"] = config.rsso_tenant
+    start_url = _browser_start_url(config)
 
     login_page = _request(
-        "POST",
+        "GET",
         start_url,
         opener=opener,
-        data=urllib.parse.urlencode(hash_handler_payload).encode("utf-8"),
-        content_type="application/x-www-form-urlencoded",
         headers={
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "User-Agent": "Mozilla/5.0",

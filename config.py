@@ -12,6 +12,7 @@ load_dotenv()
 class Config:
     base_url: str
     rsso_url: str | None = None
+    browser_start_url: str | None = None
     rsso_tenant: str | None = None
     auth_string: str | None = None
     assignee_group: str | None = None
@@ -31,6 +32,7 @@ def load_config() -> Config:
     return Config(
         base_url=_required(values, "BMC_BASE_URL").rstrip("/"),
         rsso_url=(values.get("BMC_RSSO_URL") or "").rstrip("/") or None,
+        browser_start_url=values.get("BMC_BROWSER_START_URL") or None,
         rsso_tenant=values.get("BMC_RSSO_TENANT") or None,
         auth_string=values.get("BMC_AUTH_STRING") or None,
         assignee_group=values.get("BMC_ASSIGNEE_GROUP") or None,
