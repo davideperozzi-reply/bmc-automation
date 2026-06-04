@@ -117,9 +117,12 @@ class HtmlSummaryParser(HTMLParser):
         self.in_title = False
         self.title_parts: list[str] = []
         self.forms: list[dict[str, str]] = []
+        self.inputs: list[dict[str, str]] = []
+        self.buttons: list[dict[str, str]] = []
         self.selects: list[dict[str, Any]] = []
         self.current_select: dict[str, Any] | None = None
         self.current_option: dict[str, str] | None = None
+        self.current_button: dict[str, str] | None = None
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attrs_dict = {key: value or "" for key, value in attrs}
@@ -135,6 +138,23 @@ class HtmlSummaryParser(HTMLParser):
                     "method": attrs_dict.get("method", ""),
                 }
             )
+        elif tag == "input":
+            self.inputs.append(
+                {
+                    "type": attrs_dict.get("type", ""),
+                    "id": attrs_dict.get("id", ""),
+                    "name": attrs_dict.get("name", ""),
+                    "value": attrs_dict.get("value", ""),
+                }
+            )
+        elif tag == "button":
+            self.current_button = {
+                "type": attrs_dict.get("type", ""),
+                "id": attrs_dict.get("id", ""),
+                "name": attrs_dict.get("name", ""),
+                "value": attrs_dict.get("value", ""),
+                "text": "",
+            }
         elif tag == "select":
             self.current_select = {
                 "id": attrs_dict.get("id", ""),
@@ -162,12 +182,20 @@ class HtmlSummaryParser(HTMLParser):
                 }
             )
             self.current_option = None
+        elif tag == "button" and self.current_button:
+            self.current_button["text"] = " ".join(
+                self.current_button["text"].split()
+            )
+            self.buttons.append(self.current_button)
+            self.current_button = None
 
     def handle_data(self, data: str) -> None:
         if self.in_title:
             self.title_parts.append(data.strip())
         elif self.current_option is not None:
             self.current_option["text"] += data
+        elif self.current_button is not None:
+            self.current_button["text"] += data
 
 
 def _summarize_html_page(html: str) -> str:
@@ -191,6 +219,36 @@ def _summarize_html_page(html: str) -> str:
                 ")"
             )
         parts.append("forms=" + "; ".join(form_parts))
+
+    if parser.inputs:
+        input_parts = []
+        for input_field in parser.inputs[:20]:
+            value = input_field["value"]
+            if input_field["type"].lower() == "password":
+                value = "<redacted>"
+            input_parts.append(
+                "input("
+                f"type={input_field['type']!r}, "
+                f"id={input_field['id']!r}, "
+                f"name={input_field['name']!r}, "
+                f"value={value!r}"
+                ")"
+            )
+        parts.append("inputs=" + "; ".join(input_parts))
+
+    if parser.buttons:
+        button_parts = []
+        for button in parser.buttons[:10]:
+            button_parts.append(
+                "button("
+                f"type={button['type']!r}, "
+                f"id={button['id']!r}, "
+                f"name={button['name']!r}, "
+                f"value={button['value']!r}, "
+                f"text={button['text']!r}"
+                ")"
+            )
+        parts.append("buttons=" + "; ".join(button_parts))
 
     if parser.selects:
         select_parts = []
@@ -441,8 +499,12 @@ def rsso_login(config: Config, username: str, password: str) -> urllib.request.O
     parser.feed(login_page)
 
     if not parser.fields:
-        preview = " ".join(login_page.split())[:500]
-        raise BmcApiError(f"RSSO login form was not found. Response preview: {preview}")
+        html_summary = _summarize_html_page(login_page)
+        preview = _preview_response_body(login_page)
+        raise BmcApiError(
+            "RSSO login form was not found. "
+            f"Page summary: {html_summary}. Response preview: {preview}"
+        )
 
     login_payload = dict(parser.fields)
 
