@@ -78,6 +78,107 @@ def _extract_login_error(html: str) -> str | None:
     return message or None
 
 
+class HtmlSummaryParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.in_title = False
+        self.title_parts: list[str] = []
+        self.forms: list[dict[str, str]] = []
+        self.selects: list[dict[str, Any]] = []
+        self.current_select: dict[str, Any] | None = None
+        self.current_option: dict[str, str] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attrs_dict = {key: value or "" for key, value in attrs}
+
+        if tag == "title":
+            self.in_title = True
+        elif tag == "form":
+            self.forms.append(
+                {
+                    "id": attrs_dict.get("id", ""),
+                    "name": attrs_dict.get("name", ""),
+                    "action": attrs_dict.get("action", ""),
+                    "method": attrs_dict.get("method", ""),
+                }
+            )
+        elif tag == "select":
+            self.current_select = {
+                "id": attrs_dict.get("id", ""),
+                "name": attrs_dict.get("name", ""),
+                "options": [],
+            }
+            self.selects.append(self.current_select)
+        elif tag == "option" and self.current_select is not None:
+            self.current_option = {
+                "value": attrs_dict.get("value", ""),
+                "text": "",
+            }
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "title":
+            self.in_title = False
+        elif tag == "select":
+            self.current_select = None
+        elif tag == "option" and self.current_select is not None and self.current_option:
+            options = self.current_select["options"]
+            options.append(
+                {
+                    "value": self.current_option["value"],
+                    "text": " ".join(self.current_option["text"].split()),
+                }
+            )
+            self.current_option = None
+
+    def handle_data(self, data: str) -> None:
+        if self.in_title:
+            self.title_parts.append(data.strip())
+        elif self.current_option is not None:
+            self.current_option["text"] += data
+
+
+def _summarize_html_page(html: str) -> str:
+    parser = HtmlSummaryParser()
+    parser.feed(html)
+
+    parts: list[str] = []
+    title = " ".join(" ".join(parser.title_parts).split())
+    if title:
+        parts.append(f"title={title!r}")
+
+    if parser.forms:
+        form_parts = []
+        for form in parser.forms[:5]:
+            form_parts.append(
+                "form("
+                f"id={form['id']!r}, "
+                f"name={form['name']!r}, "
+                f"action={form['action']!r}, "
+                f"method={form['method']!r}"
+                ")"
+            )
+        parts.append("forms=" + "; ".join(form_parts))
+
+    if parser.selects:
+        select_parts = []
+        for select in parser.selects[:5]:
+            options = select["options"]
+            option_parts = [
+                f"{option['text'] or option['value']!r}"
+                for option in options[:10]
+            ]
+            select_parts.append(
+                "select("
+                f"id={select['id']!r}, "
+                f"name={select['name']!r}, "
+                f"options=[{', '.join(option_parts)}]"
+                ")"
+            )
+        parts.append("selects=" + "; ".join(select_parts))
+
+    return " | ".join(parts) or "no html title/forms/selects found"
+
+
 def _preview_response_body(body: str) -> str:
     return " ".join(body.split())[:500]
 
@@ -233,10 +334,14 @@ def rsso_login(config: Config, username: str, password: str) -> urllib.request.O
     if "login_form" in response_body or "login-error-message" in response_body:
         login_error = _extract_login_error(response_body)
         raw_error = _preview_response_body(response_body)
+        html_summary = _summarize_html_page(response_body)
         if login_error:
-            raise BmcApiError(f"RSSO login failed: {login_error}: {raw_error}")
+            raise BmcApiError(
+                f"RSSO login failed: {login_error}: {html_summary}: {raw_error}"
+            )
         raise BmcApiError(
-            f"RSSO login failed: no explicit error message returned: {raw_error}"
+            "RSSO login failed: no explicit error message returned: "
+            f"{html_summary}: {raw_error}"
         )
 
     return opener
