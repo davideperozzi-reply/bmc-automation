@@ -241,19 +241,19 @@ def _submit_hash_handler_if_present(
     html: str,
     page_url: str,
     opener: urllib.request.OpenerDirector,
-) -> str:
+) -> tuple[str, str]:
     parser = FormParser("hashHandlerForm")
     parser.feed(html)
 
     if not parser.fields:
-        return html
+        return html, page_url
 
     action = urllib.parse.urljoin(page_url, parser.action or page_url)
     payload = urllib.parse.urlencode(parser.fields).encode("utf-8")
     method = parser.method.upper()
 
     if method == "POST":
-        return _request(
+        response_body, response_url = _request_with_url(
             "POST",
             action,
             opener=opener,
@@ -263,10 +263,11 @@ def _submit_hash_handler_if_present(
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 "User-Agent": "Mozilla/5.0",
             },
-        ).decode("utf-8", errors="replace")
+        )
+        return response_body.decode("utf-8", errors="replace"), response_url
 
     separator = "&" if urllib.parse.urlparse(action).query else "?"
-    return _request(
+    response_body, response_url = _request_with_url(
         "GET",
         f"{action}{separator}{payload.decode('utf-8')}",
         opener=opener,
@@ -274,10 +275,11 @@ def _submit_hash_handler_if_present(
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "User-Agent": "Mozilla/5.0",
         },
-    ).decode("utf-8", errors="replace")
+    )
+    return response_body.decode("utf-8", errors="replace"), response_url
 
 
-def _request(
+def _request_with_url(
     method: str,
     url: str,
     *,
@@ -302,7 +304,7 @@ def _request(
     try:
         open_url = opener.open if opener else urllib.request.urlopen
         with open_url(request, timeout=30) as response:
-            return response.read()
+            return response.read(), response.geturl()
     except urllib.error.HTTPError as error:
         error_body = error.read().decode("utf-8", errors="replace").strip()
         message = f"{method} {url} failed with HTTP {error.code} {error.reason}"
@@ -311,6 +313,28 @@ def _request(
         raise BmcApiError(message) from error
     except urllib.error.URLError as error:
         raise BmcApiError(f"{method} {url} failed: {error.reason}") from error
+
+
+def _request(
+    method: str,
+    url: str,
+    *,
+    opener: urllib.request.OpenerDirector | None = None,
+    token: str | None = None,
+    data: bytes | None = None,
+    content_type: str | None = None,
+    headers: dict[str, str] | None = None,
+) -> bytes:
+    response_body, _ = _request_with_url(
+        method,
+        url,
+        opener=opener,
+        token=token,
+        data=data,
+        content_type=content_type,
+        headers=headers,
+    )
+    return response_body
 
 
 def _login_error_hint(config: Config) -> str:
@@ -351,7 +375,7 @@ def rsso_login(config: Config, username: str, password: str) -> urllib.request.O
     opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
     start_url = _browser_start_url(config)
 
-    login_page = _request(
+    login_page_body, login_page_url = _request_with_url(
         "GET",
         start_url,
         opener=opener,
@@ -359,8 +383,13 @@ def rsso_login(config: Config, username: str, password: str) -> urllib.request.O
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "User-Agent": "Mozilla/5.0",
         },
-    ).decode("utf-8", errors="replace")
-    login_page = _submit_hash_handler_if_present(login_page, start_url, opener)
+    )
+    login_page = login_page_body.decode("utf-8", errors="replace")
+    login_page, login_page_url = _submit_hash_handler_if_present(
+        login_page,
+        login_page_url,
+        opener,
+    )
 
     parser = LoginFormParser()
     parser.feed(login_page)
@@ -391,7 +420,7 @@ def rsso_login(config: Config, username: str, password: str) -> urllib.request.O
     if not password_was_set:
         login_payload["password"] = password
 
-    login_action = urllib.parse.urljoin(config.rsso_url, parser.action)
+    login_action = urllib.parse.urljoin(login_page_url, parser.action)
     response_body = _request(
         "POST",
         login_action,
