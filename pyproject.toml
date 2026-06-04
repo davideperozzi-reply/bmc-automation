@@ -1,7 +1,9 @@
 [project]
 name = "bmc-automation"
 version = "0.1.0"
-description = "Add your description here"
+description = "Automation for BMC Helix"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "python-dotenv",
+]
