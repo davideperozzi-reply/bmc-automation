@@ -78,6 +78,18 @@ def _extract_login_error(html: str) -> str | None:
     return message or None
 
 
+def _set_first_matching_field(
+    payload: dict[str, str],
+    candidates: tuple[str, ...],
+    value: str,
+) -> bool:
+    for candidate in candidates:
+        if candidate in payload:
+            payload[candidate] = value
+            return True
+    return False
+
+
 def _request(
     method: str,
     url: str,
@@ -180,8 +192,26 @@ def rsso_login(config: Config, username: str, password: str) -> urllib.request.O
         raise BmcApiError(f"RSSO login form was not found. Response preview: {preview}")
 
     login_payload = dict(parser.fields)
-    login_payload["user-name"] = username
-    login_payload["password"] = password
+
+    username_was_set = _set_first_matching_field(
+        login_payload,
+        ("user-name", "username", "user", "j_username"),
+        username,
+    )
+    password_was_set = _set_first_matching_field(
+        login_payload,
+        ("password", "passwd", "j_password"),
+        password,
+    )
+    if config.auth_string:
+        login_payload["authString"] = config.auth_string
+    if config.rsso_tenant:
+        login_payload["tenant"] = config.rsso_tenant
+
+    if not username_was_set:
+        login_payload["user-name"] = username
+    if not password_was_set:
+        login_payload["password"] = password
 
     login_action = urllib.parse.urljoin(config.rsso_url, parser.action)
     response_body = _request(
