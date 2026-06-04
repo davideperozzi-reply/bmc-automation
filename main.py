@@ -78,6 +78,10 @@ def _extract_login_error(html: str) -> str | None:
     return message or None
 
 
+def _preview_response_body(body: str) -> str:
+    return " ".join(body.split())[:500]
+
+
 def _set_first_matching_field(
     payload: dict[str, str],
     candidates: tuple[str, ...],
@@ -228,9 +232,12 @@ def rsso_login(config: Config, username: str, password: str) -> urllib.request.O
 
     if "login_form" in response_body or "login-error-message" in response_body:
         login_error = _extract_login_error(response_body)
+        raw_error = _preview_response_body(response_body)
         if login_error:
-            raise BmcApiError(f"RSSO login failed: {login_error}")
-        raise BmcApiError("RSSO login failed: no explicit error message returned")
+            raise BmcApiError(f"RSSO login failed: {login_error}: {raw_error}")
+        raise BmcApiError(
+            f"RSSO login failed: no explicit error message returned: {raw_error}"
+        )
 
     return opener
 
