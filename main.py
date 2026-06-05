@@ -492,30 +492,14 @@ def login(config: Config, username: str, password: str) -> str:
     return response_body.decode("utf-8").strip()
 
 
-def rsso_login(config: Config, username: str, password: str) -> urllib.request.OpenerDirector:
-    if not config.rsso_url:
-        raise BmcApiError("BMC_RSSO_URL is required for RSSO browser-like login")
-
-    cookie_jar = http.cookiejar.CookieJar()
-    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
-    start_url = _browser_start_url(config)
-
-    login_page_body, login_page_url = _request_with_url(
-        "GET",
-        start_url,
-        opener=opener,
-        headers={
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "User-Agent": "Mozilla/5.0",
-        },
-    )
-    login_page = login_page_body.decode("utf-8", errors="replace")
-    login_page, login_page_url = _follow_auto_submit_pages(
-        login_page,
-        login_page_url,
-        opener,
-    )
-
+def _submit_login_form(
+    login_page: str,
+    login_page_url: str,
+    opener: urllib.request.OpenerDirector,
+    config: Config,
+    username: str,
+    password: str,
+) -> tuple[str, str]:
     parser = LoginFormParser()
     parser.feed(login_page)
 
@@ -568,7 +552,9 @@ def rsso_login(config: Config, username: str, password: str) -> urllib.request.O
         opener,
     )
 
-    if "login_form" in response_body or "login-error-message" in response_body:
+    repeated_login_parser = LoginFormParser()
+    repeated_login_parser.feed(response_body)
+    if repeated_login_parser.fields or "login-error-message" in response_body:
         login_error = _extract_login_error(response_body)
         raw_error = _preview_response_body(response_body)
         html_summary = _summarize_html_page(response_body)
@@ -580,6 +566,34 @@ def rsso_login(config: Config, username: str, password: str) -> urllib.request.O
             "RSSO login failed: no explicit error message returned: "
             f"{html_summary}: {raw_error}"
         )
+
+    return response_body, response_url
+
+
+def rsso_login(config: Config, username: str, password: str) -> urllib.request.OpenerDirector:
+    if not config.rsso_url:
+        raise BmcApiError("BMC_RSSO_URL is required for RSSO browser-like login")
+
+    cookie_jar = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
+    start_url = _browser_start_url(config)
+
+    login_page_body, login_page_url = _request_with_url(
+        "GET",
+        start_url,
+        opener=opener,
+        headers={
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "User-Agent": "Mozilla/5.0",
+        },
+    )
+    login_page = login_page_body.decode("utf-8", errors="replace")
+    login_page, login_page_url = _follow_auto_submit_pages(
+        login_page,
+        login_page_url,
+        opener,
+    )
+    _submit_login_form(login_page, login_page_url, opener, config, username, password)
 
     return opener
 
@@ -608,6 +622,8 @@ def fetch_incidents(config: Config, token: str) -> dict[str, Any]:
 def fetch_incidents_with_rsso(
     config: Config,
     opener: urllib.request.OpenerDirector,
+    username: str,
+    password: str,
 ) -> dict[str, Any]:
     url = f"{config.base_url}/arsys/api/com.bmc.dsm.itsm.itsm-rest-api/incident/search"
     search_payload: dict[str, Any] = {
@@ -635,6 +651,19 @@ def fetch_incidents_with_rsso(
         )
         response_body = response_text.encode("utf-8")
 
+    login_parser = LoginFormParser()
+    login_parser.feed(response_text)
+    if login_parser.fields:
+        response_text, response_url = _submit_login_form(
+            response_text,
+            response_url,
+            opener,
+            config,
+            username,
+            password,
+        )
+        response_body = response_text.encode("utf-8")
+
     return _parse_json_response(response_body, url)
 
 
@@ -646,7 +675,7 @@ def main() -> None:
     try:
         if config.rsso_url:
             opener = rsso_login(config, username, password)
-            incidents = fetch_incidents_with_rsso(config, opener)
+            incidents = fetch_incidents_with_rsso(config, opener, username, password)
         else:
             token = login(config, username, password)
             incidents = fetch_incidents(config, token)
