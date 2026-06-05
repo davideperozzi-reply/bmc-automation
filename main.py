@@ -18,6 +18,8 @@ class BmcApiError(RuntimeError):
 
 
 class LoginFormParser(HTMLParser):
+    FORM_IDS = {"login_form", "login-auth-form"}
+
     def __init__(self) -> None:
         super().__init__()
         self.in_login_form = False
@@ -27,7 +29,7 @@ class LoginFormParser(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attrs_dict = {key: value or "" for key, value in attrs}
 
-        if tag == "form" and attrs_dict.get("id") == "login_form":
+        if tag == "form" and attrs_dict.get("id") in self.FORM_IDS:
             self.in_login_form = True
             self.action = attrs_dict.get("action") or self.action
             return
@@ -510,12 +512,12 @@ def rsso_login(config: Config, username: str, password: str) -> urllib.request.O
 
     username_was_set = _set_first_matching_field(
         login_payload,
-        ("user-name", "username", "user", "j_username"),
+        ("user-name", "username", "user", "j_username", "Ecom_User_ID"),
         username,
     )
     password_was_set = _set_first_matching_field(
         login_payload,
-        ("password", "passwd", "j_password"),
+        ("password", "passwd", "j_password", "Ecom_Password"),
         password,
     )
     if config.auth_string:
