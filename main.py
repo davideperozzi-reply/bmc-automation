@@ -550,7 +550,7 @@ def rsso_login(config: Config, username: str, password: str) -> urllib.request.O
         login_payload["password"] = password
 
     login_action = urllib.parse.urljoin(login_page_url, parser.action)
-    response_body = _request(
+    response_body_bytes, response_url = _request_with_url(
         "POST",
         login_action,
         opener=opener,
@@ -560,7 +560,13 @@ def rsso_login(config: Config, username: str, password: str) -> urllib.request.O
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "User-Agent": "Mozilla/5.0",
         },
-    ).decode("utf-8", errors="replace")
+    )
+    response_body = response_body_bytes.decode("utf-8", errors="replace")
+    response_body, response_url = _follow_auto_submit_pages(
+        response_body,
+        response_url,
+        opener,
+    )
 
     if "login_form" in response_body or "login-error-message" in response_body:
         login_error = _extract_login_error(response_body)
