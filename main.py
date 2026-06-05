@@ -618,13 +618,22 @@ def fetch_incidents_with_rsso(
     if config.assignee_group:
         search_payload["assigneeGroup"] = config.assignee_group
 
-    response_body = _request(
+    response_body, response_url = _request_with_url(
         "POST",
         url,
         opener=opener,
         data=json.dumps(search_payload).encode("utf-8"),
         content_type="application/json",
     )
+
+    response_text = response_body.decode("utf-8", errors="replace")
+    if "hashHandlerForm" in response_text:
+        response_text, response_url = _follow_auto_submit_pages(
+            response_text,
+            response_url,
+            opener,
+        )
+        response_body = response_text.encode("utf-8")
 
     return _parse_json_response(response_body, url)
 
