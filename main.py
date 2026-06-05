@@ -276,6 +276,25 @@ def _preview_response_body(body: str) -> str:
     return " ".join(body.split())[:500]
 
 
+def _parse_json_response(response_body: bytes, url: str) -> dict[str, Any]:
+    text = response_body.decode("utf-8", errors="replace")
+
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as error:
+        html_summary = _summarize_html_page(text)
+        preview = _preview_response_body(text)
+        raise BmcApiError(
+            f"Expected JSON from {url}, but got a non-JSON response. "
+            f"Page summary: {html_summary}. Response preview: {preview}"
+        ) from error
+
+    if not isinstance(parsed, dict):
+        raise BmcApiError(f"Expected JSON object from {url}, got {type(parsed).__name__}")
+
+    return parsed
+
+
 def _set_first_matching_field(
     payload: dict[str, str],
     candidates: tuple[str, ...],
@@ -577,7 +596,7 @@ def fetch_incidents(config: Config, token: str) -> dict[str, Any]:
         content_type="application/json",
     )
 
-    return json.loads(response_body.decode("utf-8"))
+    return _parse_json_response(response_body, url)
 
 
 def fetch_incidents_with_rsso(
@@ -601,7 +620,7 @@ def fetch_incidents_with_rsso(
         content_type="application/json",
     )
 
-    return json.loads(response_body.decode("utf-8"))
+    return _parse_json_response(response_body, url)
 
 
 def main() -> None:
